@@ -1,0 +1,131 @@
+# Deploy wrapper CI for the upstream reqcore image. Adapted from skesis's
+# docker-image.yml: OIDC → ECR push, no Docker Hub, no npm registry secret
+# (nothing is built from source here — the app Dockerfile just wraps
+# ghcr.io/reqcore-inc/reqcore).
+#
+# Prod only: releases push semver + latest to the `reqcore` / `reqcore-nginx`
+# ECR repos and force a new deployment of reqcore-prod-service. There is no
+# dev environment for this service. workflow_dispatch builds land in the -ci
+# repos and deploy nothing (useful to smoke-test a bump before releasing).
+#
+# Requires (provisioned by solomei-infra): the ECR repos, the ECS
+# cluster/service, and the OIDC role in vars.AWS_ROLE_ARN.
+name: Docker Image CI
+
+env:
+  service_name: ${{ github.event.repository.name }}
+
+on:
+  workflow_dispatch:
+  release:
+    types:
+      - released
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-app:
+    env:
+      image_repo: ${{ github.event_name == 'release' && github.event.repository.name || format('{0}-ci', github.event.repository.name) }}
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6.2.2
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: eu-west-1
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2.1.6
+
+      - name: Extract Docker metadata
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.login-ecr.outputs.registry }}/${{ env.image_repo }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-nginx:
+    env:
+      image_repo: ${{ github.event_name == 'release' && format('{0}-nginx', github.event.repository.name) || format('{0}-nginx-ci', github.event.repository.name) }}
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6.2.2
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: eu-west-1
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2.1.6
+
+      - name: Extract Docker metadata
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.image_repo }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          platforms: linux/arm64
+          context: "{{defaultContext}}:nginx"
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-ecs:
+    runs-on: ubuntu-latest
+    needs: [build-app, build-nginx]
+    if: ${{ github.event_name == 'release' }}
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6.2.2
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: eu-west-1
+
+      - name: Update ECS Service
+        env:
+          service_name: ${{ env.service_name }}
+        run: |
+          aws ecs update-service \
+            --cluster ${service_name}-prod-cluster \
+            --service ${service_name}-prod-service \
+            --force-new-deployment
