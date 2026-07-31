@@ -16,32 +16,37 @@ USER root
 # (node:alpine ships neither curl nor wget).
 RUN apk add --no-cache curl
 
-# @napi-rs/canvas: REQUIRED for CV text extraction, despite pdfjs logging its
-# absence as a mere "Warning: Cannot load @napi-rs/canvas package".
+# THE CV-PARSING FIX. Nuxt/Nitro's dependency tracing copies pdfjs-dist's
+# entrypoint (pdf.mjs) into .output but NOT pdf.worker.mjs, which pdf.mjs only
+# ever loads dynamically. pdfjs then dies with "Setting up fake worker failed",
+# CV text extraction yields nothing, and every AI analysis 422s with "No usable
+# candidate material" while the UI blames the file ("image-based or corrupted").
+# The complete package IS present at /app/node_modules (upstream copies it for
+# the seed script), just not on the path pdfjs resolves from.
 #
-# pdfjs-dist gets DOMMatrix/ImageData/Path2D from this package under Node. When
-# it can't load, reqcore's fallback stubs take over (server/utils/resume-parser.ts)
-# — and its DOMMatrix is a fixed identity matrix that ignores its constructor
-# args, so every glyph transform collapses and getText() returns "". The parser
-# then returns null *without throwing*, so nothing is logged as an error and the
-# UI just says "Failed to extract text… image-based or corrupted". Every AI
-# analysis 422s with "No usable candidate material".
-#
-# Upstream's image omits it (it's an optional pdfjs peer), so we add it here.
-# It goes into .output/server/node_modules because that's where pdfjs resolves
-# from — the copy at /app/node_modules is NOT on its resolution path.
+# Verified in this exact image: without the worker getText() returns 0 chars;
+# with it, 6633. Re-check after any upstream bump — if Nitro starts tracing the
+# worker, this copy becomes a harmless no-op, but if the path changes the
+# `test -s` below fails the build instead of shipping a silent regression.
+RUN cp /app/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs \
+       /app/.output/server/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs \
+    && test -s /app/.output/server/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs \
+    && chown reqcore:reqcore /app/.output/server/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs
+
+# @napi-rs/canvas: silences pdfjs's "Cannot load @napi-rs/canvas" warning and
+# gives it real DOMMatrix/ImageData/Path2D instead of the degenerate stubs in
+# server/utils/resume-parser.ts. Not the cause of the parsing failure above
+# (extraction works without it), but the stubs are an identity matrix that
+# ignores its arguments, so keep the real implementation available.
 #
 # Installed in a scratch dir and copied in, rather than `npm install --prefix`
 # into .output/server: npm would re-resolve that whole manifest and abort with
 # EBADPLATFORM on lightningcss-linux-x64-gnu, a glibc-only optional dep that is
-# irrelevant here but fatal on musl. The require() check keeps a broken or
-# wrong-arch binary from silently shipping — a silent failure is exactly how
-# this bug reached production the first time.
+# irrelevant here but fatal on musl.
 RUN mkdir -p /tmp/canvas-install \
     && cd /tmp/canvas-install \
     && npm init -y > /dev/null \
     && npm install --omit=dev @napi-rs/canvas \
-    && mkdir -p /app/.output/server/node_modules \
     && cp -R /tmp/canvas-install/node_modules/@napi-rs /app/.output/server/node_modules/ \
     && rm -rf /tmp/canvas-install \
     && node -e "const c=require('/app/.output/server/node_modules/@napi-rs/canvas'); if(!c.createCanvas) throw new Error('canvas loaded but unusable')" \
