@@ -17,7 +17,7 @@ Infrastructure (ECS service, internal ALB, Aurora PostgreSQL, documents S3
 bucket, SES SMTP user) is managed in `solomei-infra` (`reqcore.tf`, plus
 `module "reqcore"` in `apps.tf`). Runtime env comes from the `prod/reqcore`
 Secrets Manager secret. The service is **internal-only**:
-<https://reqcore.callimacus.ai> resolves behind the VPN.
+<https://jobs.callimacus.ai> resolves behind the VPN.
 
 ## Upgrading reqcore
 

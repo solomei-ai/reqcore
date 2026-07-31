@@ -70,7 +70,7 @@ jobs:
           tags: reqcore-upstream:build
           push: false
           build-args: |
-            NUXT_PUBLIC_SITE_URL=https://reqcore.callimacus.ai
+            NUXT_PUBLIC_SITE_URL=https://jobs.callimacus.ai
 
       - name: Build and push wrapper
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
