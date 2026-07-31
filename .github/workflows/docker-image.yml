@@ -13,6 +13,11 @@
 #
 # Requires (provisioned by solomei-infra): the ECR repos, the ECS
 # cluster/service, and the OIDC role in vars.AWS_ROLE_ARN.
+#
+# amd64, not arm64: on arm64 reqcore's PDF resume parser extracted no text, so
+# every AI analysis failed with "No usable candidate material" (422) while the
+# same PDFs previewed fine. Keep this and `architecture = "X86_64"` in
+# solomei-infra/apps.tf in sync — they must match or ECS can't start the task.
 name: Docker Image CI
 
 env:
@@ -33,7 +38,7 @@ jobs:
   build-app:
     env:
       image_repo: ${{ github.event_name == 'release' && github.event.repository.name || format('{0}-ci', github.event.repository.name) }}
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
 
     # No setup-buildx here on purpose: the default docker driver keeps the
     # upstream image in the local daemon so the wrapper build can FROM it.
@@ -85,7 +90,7 @@ jobs:
   build-nginx:
     env:
       image_repo: ${{ github.event_name == 'release' && format('{0}-nginx', github.event.repository.name) || format('{0}-nginx-ci', github.event.repository.name) }}
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Set up Docker Buildx
@@ -117,7 +122,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
-          platforms: linux/arm64
+          platforms: linux/amd64
           context: "{{defaultContext}}:nginx"
           push: true
           tags: ${{ steps.metadata.outputs.tags }}
